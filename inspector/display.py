@@ -6,6 +6,11 @@ from .colors import Colors as C
 from .utils import safe_repr, is_user_variable
 
 
+def clear_screen():
+    """Clear the terminal screen."""
+    os.system('clear' if os.name == 'posix' else 'cls')
+
+
 def print_header(target_file: str):
     """Print the inspector banner when tracing starts."""
     bar = "\u2550" * 70
@@ -39,15 +44,25 @@ def print_source_context(
     source_lines: list[str],
     lineno: int,
     breakpoints: set[int],
+    conditional_breakpoints: dict[int, str] | None = None,
     context: int = 3,
 ):
     """Print source code around *lineno* with a pointer arrow."""
+    if conditional_breakpoints is None:
+        conditional_breakpoints = {}
+    
     total = len(source_lines)
     start = max(1, lineno - context)
     end = min(total, lineno + context)
     for i in range(start, end + 1):
         line = source_lines[i - 1].rstrip("\n") if 1 <= i <= total else ""
-        bp = f"{C.RED}*{C.RESET} " if i in breakpoints else "  "
+        # Determine breakpoint marker
+        if i in conditional_breakpoints:
+            bp = f"{C.MAGENTA}C{C.RESET} "
+        elif i in breakpoints:
+            bp = f"{C.RED}*{C.RESET} "
+        else:
+            bp = "  "
         if i == lineno:
             print(f"  {bp}{C.YELLOW}{C.BOLD}-> {i:>4} | {line}{C.RESET}")
         else:
@@ -59,15 +74,40 @@ def print_variables(
     local_vars: dict,
     prev_vars: dict,
     force_all: bool = False,
+    var_filter=None,  # re.Pattern or None
 ):
-    """Print user variables, highlighting new / changed ones."""
+    """Print user variables, highlighting new / changed ones.
+    
+    Args:
+        var_filter: Optional regex pattern to filter variable names.
+    """
+    import re
+    
     filtered = {k: v for k, v in local_vars.items() if is_user_variable(k, v)}
+    
+    # Apply variable name filter if provided
+    if var_filter is not None:
+        if isinstance(var_filter, str):
+            try:
+                var_filter = re.compile(var_filter)
+            except re.error:
+                var_filter = None
+        if var_filter is not None:
+            filtered = {k: v for k, v in filtered.items() if var_filter.search(k)}
+    
     if not filtered:
         if force_all:
-            print(f"  {C.DIM}(no user variables){C.RESET}")
+            if var_filter is not None:
+                print(f"  {C.DIM}(no variables match filter){C.RESET}")
+            else:
+                print(f"  {C.DIM}(no user variables){C.RESET}")
         return
 
-    print(f"  {C.GREEN}{C.BOLD}Variables:{C.RESET}")
+    if var_filter is not None:
+        print(f"  {C.GREEN}{C.BOLD}Variables (filtered):{C.RESET}")
+    else:
+        print(f"  {C.GREEN}{C.BOLD}Variables:{C.RESET}")
+    
     for name in sorted(filtered):
         value = filtered[name]
         vrepr = safe_repr(value)
@@ -85,17 +125,55 @@ def print_variables(
     print()
 
 
-def print_call_stack(call_stack: list[dict]):
-    """Print the current call stack."""
-    print(f"\n  {C.GREEN}{C.BOLD}Call Stack (most recent last):{C.RESET}")
+def print_call_stack(
+    call_stack: list[dict],
+    source_lines: list[str],
+    context: int = 3,
+):
+    """Print the call stack with source code context for each frame.
+    
+    Shows source lines around each call site (for callers) and current line (for current frame).
+    Top = oldest caller, Bottom = current frame.
+    """
+    print(f"\n  {C.GREEN}{C.BOLD}Call Stack:{C.RESET}")
+    
     if not call_stack:
-        print(f"    {C.DIM}(top level){C.RESET}")
+        print(f"    {C.DIM}(top level){C.RESET}\n")
+        return
+    
+    total = len(source_lines)
+    
     for i, entry in enumerate(call_stack):
-        indent = "    " * (i + 1)
-        print(
-            f"  {indent}-> {C.CYAN}{entry['func']}{C.RESET} "
-            f"at {entry['file']}:{entry['line']}"
-        )
+        is_current = (i == len(call_stack) - 1)
+        func_name = entry['func']
+        lineno = entry['line']
+        fname = entry['file']
+        
+        # Print frame header
+        if is_current:
+            label = f"{C.YELLOW}{C.BOLD}-> {func_name}{C.RESET}"
+        else:
+            label = f"{C.CYAN}{func_name}{C.RESET}"
+        
+        print(f"\n  {label} {C.DIM}({fname}:{lineno}){C.RESET}")
+        
+        # Print source context around this line
+        start = max(1, lineno - context)
+        end = min(total, lineno + context)
+        
+        for j in range(start, end + 1):
+            line = source_lines[j - 1].rstrip("\n") if 1 <= j <= total else ""
+            if j == lineno:
+                # Highlight the relevant line
+                if is_current:
+                    # Current line being executed
+                    print(f"    {C.YELLOW}{C.BOLD}-> {j:>4} | {line}{C.RESET}")
+                else:
+                    # Call site line
+                    print(f"    {C.CYAN}{C.BOLD}-> {j:>4} | {line}{C.RESET}")
+            else:
+                print(f"    {C.DIM}   {j:>4} | {line}{C.RESET}")
+    
     print()
 
 
